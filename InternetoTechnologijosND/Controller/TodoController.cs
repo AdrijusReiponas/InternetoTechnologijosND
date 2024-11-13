@@ -81,8 +81,7 @@ namespace InternetoTechnologijosND.Controller
             return TypedResults.NotFound("No user found with given token");
         }
 
-        public static async Task<IResult> UpdateTodoById(int id, Todo todoInput, TodoDb todoDb, UserDb userDb,
-            HttpContext context)
+        public static async Task<IResult> UpdateTodoById(int id, Todo todoInput, TodoDb todoDb, UserDb userDb, HttpContext context)
         {
             var todo = await todoDb.Todos.FindAsync(id);
 
@@ -111,8 +110,7 @@ namespace InternetoTechnologijosND.Controller
             return TypedResults.NotFound("No todo found with given ID");
         }
 
-        public static async Task<IResult> UpdateTodoToCompleteById(int id, TodoDb todoDb, UserDb userDb,
-            HttpContext context)
+        public static async Task<IResult> UpdateTodoToCompleteById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
         {
             var todo = await todoDb.Todos.FindAsync(id);
 
