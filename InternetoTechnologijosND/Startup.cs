@@ -7,8 +7,10 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddSingleton<MongoDbContext>();
+
 // use RAM database
-builder.Services.AddDbContext<TodoDb>(opt => opt.UseInMemoryDatabase("TodoList"));
+//builder.Services.AddDbContext<TodoDb>(opt => opt.UseInMemoryDatabase("TodoList"));
 builder.Services.AddDbContext<UserDb>(opt => opt.UseInMemoryDatabase("UserList"));
 
 // use authentication

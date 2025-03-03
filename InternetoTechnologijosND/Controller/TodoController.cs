@@ -3,6 +3,7 @@ using InternetoTechnologijosND.Objects;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using MongoDB.Driver;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -11,19 +12,18 @@ namespace InternetoTechnologijosND.Controller
 {
     public class TodoController
     {
-        // Refactored ->
         private static async Task<User?> GetAuthorizedUser(HttpContext context, UserDb userDb)
         {
             var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
             return await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
         }
 
-        private static async Task SaveTodoChangesToDatabase(TodoDb todoDb)
+        private static async Task SaveTodoChangesToDatabase(MongoDbContext mongoDbContext)
         {
-            await todoDb.SaveChangesAsync();
+            // MongoDB doesn't have SaveChangesAsync like EF Core, so no need for it.
         }
 
-        public static async Task<IResult> CreateTodo(Todo todoItem, TodoDb todoDb, UserDb userDb, HttpContext context)
+        public static async Task<IResult> CreateTodo(Todo todoItem, MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
             var user = await GetAuthorizedUser(context, userDb);
 
@@ -35,13 +35,12 @@ namespace InternetoTechnologijosND.Controller
             todoItem.UserId = user.Id;
             todoItem.IsComplete = false;
 
-            todoDb.Todos.Add(todoItem);
-            await SaveTodoChangesToDatabase(todoDb);
+            await mongoDbContext.Todos.InsertOneAsync(todoItem);
 
             return TypedResults.Created($"/todos/{todoItem.Id}", todoItem);
         }
 
-        public static async Task<IResult> GetCompletedTodos(TodoDb todoDb, UserDb userDb, HttpContext context)
+        public static async Task<IResult> GetCompletedTodos(MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
             var user = await GetAuthorizedUser(context, userDb);
 
@@ -50,11 +49,11 @@ namespace InternetoTechnologijosND.Controller
                 return TypedResults.NotFound("No user found with given token");
             }
 
-            var todos = await todoDb.Todos
-                .Where(todo => todo.UserId == user.Id && todo.IsComplete)
-                .ToArrayAsync();
+            var todos = await mongoDbContext.Todos
+                .Find(todo => todo.UserId == user.Id && todo.IsComplete)
+                .ToListAsync();
 
-            if (todos.IsNullOrEmpty())
+            if (todos.Count == 0)
             {
                 return TypedResults.NotFound("No completed todos");
             }
@@ -62,7 +61,7 @@ namespace InternetoTechnologijosND.Controller
             return TypedResults.Ok(todos);
         }
 
-        public static async Task<IResult> UpdateTodoById(int id, Todo updatedTodo, TodoDb todoDb, UserDb userDb, HttpContext context)
+        public static async Task<IResult> UpdateTodoById(string id, Todo updatedTodo, MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
             var user = await GetAuthorizedUser(context, userDb);
             if (user is null)
@@ -70,7 +69,7 @@ namespace InternetoTechnologijosND.Controller
                 return TypedResults.NotFound("No user found with given token");
             }
 
-            var todo = await todoDb.Todos.FindAsync(id);
+            var todo = await mongoDbContext.Todos.Find(todo => todo.Id == id).FirstOrDefaultAsync();
             if (todo is null)
             {
                 return TypedResults.NotFound("No todo found with given ID");
@@ -82,12 +81,18 @@ namespace InternetoTechnologijosND.Controller
             }
 
             todo.Name = updatedTodo.Name ?? todo.Name;
-            await SaveTodoChangesToDatabase(todoDb);
+            todo.IsComplete = updatedTodo.IsComplete;
+
+            var updateDefinition = Builders<Todo>.Update
+                .Set(t => t.Name, todo.Name)
+                .Set(t => t.IsComplete, todo.IsComplete);
+
+            await mongoDbContext.Todos.UpdateOneAsync(t => t.Id == id, updateDefinition);
 
             return TypedResults.Ok(todo);
         }
 
-        public static async Task<IResult> DeleteTodoById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
+        public static async Task<IResult> DeleteTodoById(string id, MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
             var user = await GetAuthorizedUser(context, userDb);
             if (user is null)
@@ -95,7 +100,7 @@ namespace InternetoTechnologijosND.Controller
                 return TypedResults.NotFound("No user found with given token");
             }
 
-            var todo = await todoDb.Todos.FindAsync(id);
+            var todo = await mongoDbContext.Todos.Find(todo => todo.Id == id).FirstOrDefaultAsync();
             if (todo is null)
             {
                 return TypedResults.NotFound("No todo found with given ID");
@@ -111,37 +116,36 @@ namespace InternetoTechnologijosND.Controller
                 return TypedResults.BadRequest("Todo is not completed");
             }
 
-            todoDb.Todos.Remove(todo);
-            await SaveTodoChangesToDatabase(todoDb);
+            await mongoDbContext.Todos.DeleteOneAsync(t => t.Id == id);
 
             return TypedResults.Ok("Todo deleted");
         }
-        // Refactored <-
 
-
-        public static async Task<IResult> GetAllTodos(TodoDb todoDb, UserDb userDb, HttpContext context)
+        public static async Task<IResult> GetAllTodos(MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
             var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
             var user = await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
 
             if (user is not null)
             {
-                var todos = await todoDb.Todos.Where(todo => todo.UserId == user.Id).ToArrayAsync();
+                var todos = await mongoDbContext.Todos
+                    .Find(todo => todo.UserId == user.Id)
+                    .ToListAsync();
 
-                return todos.IsNullOrEmpty() ? TypedResults.NotFound("No todos") : TypedResults.Ok(todos);
+                return todos.Count == 0 ? TypedResults.NotFound("No todos") : TypedResults.Ok(todos);
             }
 
             return TypedResults.NotFound("No user found with given token");
         }
-        
-        public static async Task<IResult> GetTodoById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
+
+        public static async Task<IResult> GetTodoById(string id, MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
             var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
             var user = await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
 
             if (user is not null)
             {
-                var todo = await todoDb.Todos.FindAsync(id);
+                var todo = await mongoDbContext.Todos.Find(todo => todo.Id == id).FirstOrDefaultAsync();
 
                 if (todo is not null && todo.UserId == user.Id)
                 {
@@ -153,36 +157,208 @@ namespace InternetoTechnologijosND.Controller
 
             return TypedResults.NotFound("No user found with given token");
         }
-        
-        public static async Task<IResult> UpdateTodoToCompleteById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
+
+        public static async Task<IResult> UpdateTodoToCompleteById(string id, MongoDbContext mongoDbContext, UserDb userDb, HttpContext context)
         {
-            var todo = await todoDb.Todos.FindAsync(id);
-
-            if (todo is not null)
+            var user = await GetAuthorizedUser(context, userDb);
+            if (user is null)
             {
-                var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
-                var user = await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
-
-                if (user is not null)
-                {
-                    if (user.Id == todo.UserId)
-                    {
-                        todo.IsComplete = true;
-
-                        await todoDb.SaveChangesAsync();
-
-                        return TypedResults.Ok(todo);
-                    }
-
-                    return TypedResults.NotFound("Todo belongs to another user");
-                }
-
                 return TypedResults.NotFound("No user found with given token");
             }
 
-            return TypedResults.NotFound("No todo found with given ID");
+            var todo = await mongoDbContext.Todos.Find(todo => todo.Id == id).FirstOrDefaultAsync();
+            if (todo is null)
+            {
+                return TypedResults.NotFound("No todo found with given ID");
+            }
+
+            if (todo.UserId != user.Id)
+            {
+                return TypedResults.NotFound("Todo belongs to another user");
+            }
+
+            todo.IsComplete = true;
+
+            var updateDefinition = Builders<Todo>.Update
+                .Set(t => t.IsComplete, true);
+
+            await mongoDbContext.Todos.UpdateOneAsync(t => t.Id == id, updateDefinition);
+
+            return TypedResults.Ok(todo);
         }
-        
+
+        // Refactored ->
+        //private static async Task<User?> GetAuthorizedUser(HttpContext context, UserDb userDb)
+        //{
+        //    var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+        //    return await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
+        //}
+
+        //private static async Task SaveTodoChangesToDatabase(TodoDb todoDb)
+        //{
+        //    await todoDb.SaveChangesAsync();
+        //}
+
+        //public static async Task<IResult> CreateTodo(Todo todoItem, TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var user = await GetAuthorizedUser(context, userDb);
+
+        //    if (user is null)
+        //    {
+        //        return TypedResults.NotFound("No user found with given token");
+        //    }
+
+        //    todoItem.UserId = user.Id;
+        //    todoItem.IsComplete = false;
+
+        //    todoDb.Todos.Add(todoItem);
+        //    await SaveTodoChangesToDatabase(todoDb);
+
+        //    return TypedResults.Created($"/todos/{todoItem.Id}", todoItem);
+        //}
+
+        //public static async Task<IResult> GetCompletedTodos(TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var user = await GetAuthorizedUser(context, userDb);
+
+        //    if (user is null)
+        //    {
+        //        return TypedResults.NotFound("No user found with given token");
+        //    }
+
+        //    var todos = await todoDb.Todos
+        //        .Where(todo => todo.UserId == user.Id && todo.IsComplete)
+        //        .ToArrayAsync();
+
+        //    if (todos.IsNullOrEmpty())
+        //    {
+        //        return TypedResults.NotFound("No completed todos");
+        //    }
+
+        //    return TypedResults.Ok(todos);
+        //}
+
+        //public static async Task<IResult> UpdateTodoById(int id, Todo updatedTodo, TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var user = await GetAuthorizedUser(context, userDb);
+        //    if (user is null)
+        //    {
+        //        return TypedResults.NotFound("No user found with given token");
+        //    }
+
+        //    var todo = await todoDb.Todos.FindAsync(id);
+        //    if (todo is null)
+        //    {
+        //        return TypedResults.NotFound("No todo found with given ID");
+        //    }
+
+        //    if (todo.UserId != user.Id)
+        //    {
+        //        return TypedResults.NotFound("Todo belongs to another user");
+        //    }
+
+        //    todo.Name = updatedTodo.Name ?? todo.Name;
+        //    await SaveTodoChangesToDatabase(todoDb);
+
+        //    return TypedResults.Ok(todo);
+        //}
+
+        //public static async Task<IResult> DeleteTodoById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var user = await GetAuthorizedUser(context, userDb);
+        //    if (user is null)
+        //    {
+        //        return TypedResults.NotFound("No user found with given token");
+        //    }
+
+        //    var todo = await todoDb.Todos.FindAsync(id);
+        //    if (todo is null)
+        //    {
+        //        return TypedResults.NotFound("No todo found with given ID");
+        //    }
+
+        //    if (todo.UserId != user.Id)
+        //    {
+        //        return TypedResults.NotFound("Todo belongs to another user");
+        //    }
+
+        //    if (!todo.IsComplete)
+        //    {
+        //        return TypedResults.BadRequest("Todo is not completed");
+        //    }
+
+        //    todoDb.Todos.Remove(todo);
+        //    await SaveTodoChangesToDatabase(todoDb);
+
+        //    return TypedResults.Ok("Todo deleted");
+        //}
+        //// Refactored <-
+
+
+        //public static async Task<IResult> GetAllTodos(TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+        //    var user = await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
+
+        //    if (user is not null)
+        //    {
+        //        var todos = await todoDb.Todos.Where(todo => todo.UserId == user.Id).ToArrayAsync();
+
+        //        return todos.IsNullOrEmpty() ? TypedResults.NotFound("No todos") : TypedResults.Ok(todos);
+        //    }
+
+        //    return TypedResults.NotFound("No user found with given token");
+        //}
+
+        //public static async Task<IResult> GetTodoById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+        //    var user = await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
+
+        //    if (user is not null)
+        //    {
+        //        var todo = await todoDb.Todos.FindAsync(id);
+
+        //        if (todo is not null && todo.UserId == user.Id)
+        //        {
+        //            return TypedResults.Ok(todo);
+        //        }
+
+        //        return TypedResults.NotFound("No todo found with given ID for the current user");
+        //    }
+
+        //    return TypedResults.NotFound("No user found with given token");
+        //}
+
+        //public static async Task<IResult> UpdateTodoToCompleteById(int id, TodoDb todoDb, UserDb userDb, HttpContext context)
+        //{
+        //    var todo = await todoDb.Todos.FindAsync(id);
+
+        //    if (todo is not null)
+        //    {
+        //        var token = context.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+        //        var user = await userDb.Users.FirstOrDefaultAsync(usr => usr.Token == token);
+
+        //        if (user is not null)
+        //        {
+        //            if (user.Id == todo.UserId)
+        //            {
+        //                todo.IsComplete = true;
+
+        //                await todoDb.SaveChangesAsync();
+
+        //                return TypedResults.Ok(todo);
+        //            }
+
+        //            return TypedResults.NotFound("Todo belongs to another user");
+        //        }
+
+        //        return TypedResults.NotFound("No user found with given token");
+        //    }
+
+        //    return TypedResults.NotFound("No todo found with given ID");
+        //}
+
         [AllowAnonymous]
         public static async Task<IResult> CreateTokenAndUser(User user, UserDb userDb, IConfiguration configuration)
         {
